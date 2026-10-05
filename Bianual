@@ -1,0 +1,509 @@
+################################################################################
+#
+#  GIS-FA: Analise inicial
+#
+#   Descricao: As analises realizadas aqui foram feitas considerando os dados das 
+#     medias de duas safras. 
+#
+#   Os dados fenotipicos foram considerados as medias dentro de duas safras por local, 
+#     isso foi realizado para padronizar possiveis vieses da bianualidade 
+#
+################################################################################
+rm(list=ls())
+setwd("/home/luis/Área de Trabalho/GIS_FA_CAFE-main/03_analises_08_2026/10_scenario_6")
+
+# Carregando pacotes ------------------
+library(readxl)
+library(dplyr)
+library(asreml)
+library(ggplot2)
+##------------------------------------------------------------------------------
+
+data <- rio::import("https://raw.githubusercontent.com/Luigicarlo01/GIS_FA_COFFEE/main/data_ciclo.xlsx")[, 1:9]
+data2<-data%>%
+  group_by(municipio,produtor,lat,lon,cultivar,ano)%>%
+  summarise(prod=mean(prod,na.rm=T),
+            .groups = "drop")%>%
+  ungroup() %>%
+  dplyr::mutate(env= paste0("env.", as.numeric(as.factor(paste(lat, lon, ano,
+                                                               sep = "_")))))%>%
+  mutate(env=as.factor(env),gen=as.factor(cultivar),ano=as.factor(ano))
+
+
+#===============================================================================
+### Preparando os dados para as medias das safras para quebra da bianualidade 
+#===============================================================================
+# Removendo locais com apenas uma medida 
+
+resumo<- data2 %>%
+  dplyr::mutate(env= paste0("env.", as.numeric(as.factor(paste(lat, lon,
+                                                               sep = "_")))))%>%
+  select(env, ano, lat, lon) %>%
+  distinct() %>%
+  count(env,lat, lon, name = "n_anos")
+
+
+eliminar<-resumo%>%filter(n_anos==1)
+years.2<-resumo%>%filter(n_anos==2)
+years.3<-resumo%>%filter(n_anos==3)
+years.4<-resumo%>%filter(n_anos==4)
+
+
+# Um ano de avaliacao 
+dt1<- data2 %>% semi_join(eliminar, by = c("lat", "lon"))
+
+# dois anos de avaliacoes
+dt2 <- data2 %>%
+  semi_join(years.2, by = c("lat", "lon")) %>%
+  group_by(municipio, produtor, lat, lon, gen) %>%
+  droplevels()%>%
+  summarise(ano = paste(sort(unique(ano)), collapse = "-"),
+            prod = mean(prod, na.rm = TRUE),
+            .groups = "drop"
+  )
+
+# tres de avaliacoes
+dt3<- data2 %>% semi_join(years.3, by = c("lat", "lon"))%>%
+  dplyr::mutate(env= paste0("env.", as.numeric(as.factor(paste(lat, lon,
+                                                               sep = "_")))))
+new.data <- list()
+for(i in 1:length(unique(dt3$env))){
+  env.new<-unique(dt3$env)[i]
+  
+  dt<-dt3%>%filter(env%in%env.new)
+  years<-unique(dt$ano)%>%droplevels()
+  
+  dt<-dt3%>%filter(env%in%env.new)%>%filter(ano%in%years[1:2])%>%
+    group_by(municipio, produtor, lat, lon, gen) %>%
+    droplevels()%>%
+    summarise(ano = paste(sort(unique(ano)), collapse = "-"),
+              prod = mean(prod, na.rm = TRUE),
+              .groups = "drop"
+    )
+  
+  dt.last.year<-dt3%>%filter(env%in%env.new)%>%filter(ano%in%years[3])%>%select(
+    municipio,produtor, lat, lon, gen, ano, prod)
+  
+  dt.agrup<-rbind(dt,dt.last.year)
+  new.data[[length(new.data)+1]]<-dt.agrup
+  
+}
+
+dt3<-do.call("rbind",new.data)
+
+# Quatro de avaliacoes
+dt4<- data2 %>% semi_join(years.4, by = c("lat", "lon"))%>%
+  dplyr::mutate(env= paste0("env.", as.numeric(as.factor(paste(lat, lon,
+                                                               sep = "_")))))
+
+new.data <- list()
+for(i in 1:length(unique(dt4$env))){
+  env.new<-unique(dt4$env)[i]
+  
+  dt<-dt4%>%filter(env%in%env.new)
+  years<-unique(dt$ano)%>%droplevels()
+  
+  dt<-dt4%>%filter(env%in%env.new)%>%filter(ano%in%years[1:2])%>%
+    group_by(municipio, produtor, lat, lon, gen) %>%
+    droplevels()%>%
+    summarise(ano = paste(sort(unique(ano)), collapse = "-"),
+              prod = mean(prod, na.rm = TRUE),
+              .groups = "drop")
+  
+  dt.last.year<-dt4%>%filter(env%in%env.new)%>%filter(ano%in%years[3:4])%>%
+    group_by(municipio, produtor, lat, lon, gen) %>%
+    droplevels()%>%
+    summarise(ano = paste(sort(unique(ano)), collapse = "-"),
+              prod = mean(prod, na.rm = TRUE),
+              .groups = "drop")
+  
+  
+  dt.agrup<-rbind(dt,dt.last.year)%>%    select(
+    municipio,produtor, lat, lon, gen, ano, prod)
+  
+  
+  new.data[[length(new.data)+1]]<-dt.agrup
+  
+}
+
+dt4<-do.call("rbind",new.data)
+
+## Reconstruindo o arquivo de dados
+new.data<-rbind(dt2,dt3)
+new.data<-rbind(new.data,dt4)
+
+new.data <-new.data%>%
+  dplyr::mutate(env= paste0("env.", as.numeric(as.factor(paste(lat, lon,ano,
+                                                               sep = "_")))))%>%
+  ungroup() %>%
+  mutate(env=as.factor(env),gen=as.factor(gen),ano=as.factor(ano))
+
+
+
+data2<-droplevels(new.data)
+
+#------------------------
+## Testando os modelos
+#------------------------
+source("https://raw.githubusercontent.com/Guilherme-Bravim/possibly_useful/refs/heads/main/fa_outs_mod.R")
+
+# # FA1 
+# mod.fa1 <- asreml(fixed = prod ~  env,
+#                   random = ~ gen:fa(env, 1),
+#                   #             residual = ~dsum(~id(units)|local),
+#                   data = data2,
+#                   maxit = 1000,
+#                   na.action = na.method(x="include", y = "include"))
+# mod.fa1 = update(mod.fa1)
+# 
+# # FA2
+# mod.fa2 <- asreml(fixed = prod ~ env,
+#                   random = ~ gen:fa(env, 2),
+#                   #           residual = ~dsum(~id(units)|local),
+#                   data = data2,
+#                   maxit = 1000,
+#                   na.action = na.method(x="include", y = "include"))
+# mod.fa2 = update(mod.fa2)
+
+# FA3
+mod.fa3 <- asreml(fixed = prod ~ env,
+                  random = ~ gen:fa(env, 3),
+                  #           residual = ~dsum(~id(units)|local),
+                  data = data2,
+                  maxit = 1000,
+                  na.action = na.method(x="include", y = "include"))
+mod.fa3 = update(mod.fa3)
+
+# # FA4
+# mod.fa4 <- asreml(fixed = prod ~ env,
+#                   random = ~ gen:fa(env, 4),
+#                   #           residual = ~dsum(~id(units)|local),
+#                   data = data2,
+#                   maxit = 1000,
+#                   na.action = na.method(x="include", y = "include"))
+# mod.fa4 = update(mod.fa4)
+# 
+# # FA5
+# mod.fa5 <- asreml(fixed = prod ~  env,
+#                   random = ~ gen:fa(env, 5),
+#                   #           residual = ~dsum(~id(units)|local),
+#                   data = data2,
+#                   maxit = 1000,
+#                   workspace="1gb",
+#                   na.action = na.method(x="include", y = "include"))
+# mod.fa5 = update(mod.fa5)
+# 
+# 
+# # FA6
+# mod.fa6 <- asreml(fixed = prod ~  env,
+#                   random = ~ gen:fa(env, 6),
+#                   #           residual = ~dsum(~id(units)|local),
+#                   data = data2,
+#                   maxit = 1000,
+#                   workspace="1gb",
+#                   na.action = na.method(x="include", y = "include"))
+# mod.fa6 = update(mod.fa6)
+
+#asreml.options(pworkspace="8gb",workspace="4gb")
+fa.models = list(mod.fa3)
+
+fa.res = lapply(fa.models, function(x) fa.outs(x, name.env = "env",
+                                               name.gen = "gen"))
+
+diagnos = do.call(rbind,lapply(fa.res, function(x) x$diagnostics))
+#rownames(diagnos) = c("mod.fa1", "mod.fa2","mod.fa3","mod.fa4", "mod.fa5", "mod.fa6"); diagnos[,'ASVR']
+diagnos
+
+# summary(mod.fa1)$aic
+# summary(mod.fa2)$aic
+# summary(mod.fa3)$aic
+# summary(mod.fa4)$aic
+# summary(mod.fa5)$aic
+# summary(mod.fa6)$aic
+
+fa.models = list(mod.fa3)
+fa.res = lapply(fa.models, function(x) fa.outs(x, name.env = "env",
+                                               name.gen = "gen"))
+all <- fa.res[[1]]$blups
+
+fa = fa.res[[1]]
+
+library(tidyr)
+library(tibble)
+
+dist_matrix <- dist(fa$Gcor, method = "euclidean")  
+hc <- hclust(dist_matrix, method = "ward.D2")
+ordered_indices <- hc$order
+fa_clustered <- fa$Gcor[ordered_indices, ordered_indices]
+rownames(fa_clustered) <- colnames(fa_clustered) <- rownames(fa$Gcor)[ordered_indices]
+
+fa_clustered[upper.tri(fa_clustered, diag = TRUE)] <- NA
+
+
+fa_melted <- fa_clustered %>%
+  as.data.frame() %>%
+  rownames_to_column("Var1") %>%
+  pivot_longer(-Var1, names_to = "Var2", values_to = "Correlation") %>%
+  drop_na()
+
+fa_melted$Var1 <- factor(fa_melted$Var1, levels = rev(rownames(fa_clustered)))
+fa_melted$Var2 <- factor(fa_melted$Var2, levels = colnames(fa_clustered))
+
+cor <- ggplot(fa_melted, aes(x = Var2, y = Var1, fill = Correlation)) +
+  geom_tile(color = NA, width = 1, height = 1) +  
+  scale_fill_viridis_c(option = "H", limits = c(-1, 1), na.value = "white") +
+  scale_x_discrete(expand = c(0, 0)) +  
+  scale_y_discrete(expand = c(0, 0)) +  
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.title = element_text(size = 11, face = "bold"),
+    panel.grid = element_blank(),    
+    panel.background = element_blank(),
+    plot.background = element_blank()
+  ) +
+  labs(x = NULL, y = NULL, fill = "Corr.") +
+  coord_fixed()
+
+#cor
+
+num.env<- nlevels(data2$env);num.env
+num.gen<- nlevels(data2$gen);num.gen
+num.year<- nlevels(data2$ano)
+name.env<- levels(data2$env)
+name.gen<- levels(data2$gen)
+
+#--------------------------------------------
+# Organizando os dados ambientais 
+#--------------------------------------------
+env.info <- readRDS(url("https://raw.githubusercontent.com/Luigicarlo01/GIS_FA_COFFEE/main/new_data_tested_env_diario.RDS")) %>%
+  dplyr::select(!c(FROST_DAYS, FRUE))%>%
+  dplyr::mutate(env=env.x)%>%
+  dplyr::select(!c(env.x,env.y))
+
+# Organizando os dados ambientais ---------
+# Calculando para as janelas de 15 dias, no caso dos ambientes calculado com media de dois anos, os dados ambientais sao 
+#   as medias dos 15 dias do primeiro ano e dos 15 dias do segundo ano
+library(stringr)
+library(lubridate)
+library(dplyr)
+library(tidyr)
+
+env.info <- env.info %>%
+  dplyr::mutate(
+    data = as.Date(YYYYMMDD),
+    ano_janela = ifelse(month(data) >= 8, year(data) + 1, year(data)),
+    inicio_ciclo = as.Date(paste0(ano_janela - 1, "-08-01")),
+    dia_ciclo = as.numeric(data - inicio_ciclo) + 1,
+    periodo = ceiling(dia_ciclo / 15)
+  )
+
+
+env.list <- list()
+
+for (i in 1:length(unique(data2$env))) {
+  
+  dt <- data2 %>%
+    dplyr::filter(env %in% levels(droplevels(data2$env))[i]) %>%
+    dplyr::select(lat, lon, ano, env) %>%
+    distinct()
+  
+  anos <- as.numeric(unlist(str_split(dt$ano, "-")))
+  
+  env.frac <- env.info %>%
+    dplyr::select(-data, -inicio_ciclo, -dia_ciclo, -DOY, -YYYYMMDD) %>%
+    semi_join(dt, by = c("lat", "lon")) %>%
+    dplyr::filter(ano_janela %in% anos) %>%
+    dplyr::select(-ano_janela) %>%
+    # agrupa por PERIODO, nao por ano -> se o env tiver 2 anos-safra,
+    # os dias do mesmo periodo nos dois anos entram na mesma media,
+    # e cada periodo vira uma variavel nova apos o pivot_wider
+    group_by(lat, lon, periodo) %>%
+    summarise(
+      across(where(is.numeric), \(x) mean(x, na.rm = TRUE)),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      names_from = periodo,
+      values_from = -c(lat, lon, periodo),
+      names_glue = "{.value}.m{periodo}"
+    )
+  
+  env.frac$env <- levels(droplevels(data2$env))[i]
+  ordem <- c("env", setdiff(colnames(env.frac), "env"))
+  env.frac <- env.frac[, ordem]
+  
+  env.list[[length(env.list) + 1]] <- env.frac
+}
+
+env.final <- dplyr::bind_rows(env.list)
+
+#------------------------------------
+# Determinando numero de componentes
+#------------------------------------
+library(pls)
+library(dplyr)
+library(asreml)
+
+matcovamb<-env.final[,-c(1:3)]
+matcovamb<-as.data.frame(matcovamb)
+rownames(matcovamb)<-env.final$env
+
+fa4<- fa.res
+
+Lambda  <- as.matrix(fa4$rot.loads)
+CovAmb0 <- as.matrix(matcovamb)
+
+envs <- intersect(rownames(Lambda), rownames(CovAmb0))
+
+Lambda  <- Lambda[envs, , drop = FALSE]
+CovAmb0 <- CovAmb0[envs, , drop = FALSE]
+
+ok <- apply(
+  CovAmb0,
+  2,
+  function(x) is.finite(sd(x, na.rm = TRUE)) && sd(x, na.rm = TRUE) > 0
+)
+
+CovAmb0 <- CovAmb0[, ok, drop = FALSE]
+CovAmb  <- scale(CovAmb0)
+
+cat("Número de ambientes:", nrow(CovAmb), "\n")
+cat("Número de covariáveis ambientais:", ncol(CovAmb), "\n")
+cat("Número de cargas fatoriais:", ncol(Lambda), "\n")
+
+get_blue_env <- function(env_i, data) {
+  
+  df_i <- data[data$env == env_i, ]
+  df_i <- droplevels(df_i)
+  
+  out<- df_i%>%dplyr::group_by(gen)%>%
+    dplyr::summarise(blue=mean(prod,na.rm=T))%>%
+    dplyr::mutate(env=env_i)
+  
+  out$blue_dev <- out$blue - mean(out$blue, na.rm = TRUE)
+  out
+}
+
+
+blue_tab <- do.call(
+  rbind,
+  lapply(envs, get_blue_env, data = data2)
+)
+
+n_env <- nrow(CovAmb)
+
+
+if (n_env < 3) {
+  stop("Número insuficiente de ambientes para validação.")
+}
+
+nmax <- min(30, n_env - 2, ncol(CovAmb))
+
+cv.results <- do.call(rbind, lapply(1:nmax, function(j) {
+  
+  acc_lambda <- numeric(0)
+  acc_blue   <- numeric(0)
+  rmsep_blue <- numeric(0)
+  
+  for (i in rownames(CovAmb)) {
+    
+    env_train <- setdiff(rownames(CovAmb), i)
+    
+    df_train <- data.frame(
+      lambda = I(Lambda[env_train, , drop = FALSE]),
+      CovAmb = I(CovAmb[env_train, , drop = FALSE])
+    )
+    
+    mod_pls <- pls::plsr(
+      lambda ~ CovAmb,
+      data = df_train,
+      ncomp = j,
+      validation = "none"
+    )
+    
+    cf <- coef(mod_pls, ncomp = j, intercept = TRUE)[, , 1]
+    
+    B  <- as.matrix(cf[-1, , drop = FALSE])
+    b0 <- matrix(as.numeric(cf[1, ]), nrow = 1)
+    
+    pred_l <- CovAmb[i, , drop = FALSE] %*% B + b0
+    
+    acc_lambda <- c(
+      acc_lambda,
+      suppressWarnings(
+        cor(as.numeric(pred_l), as.numeric(Lambda[i, ]))
+      )
+    )
+    
+    pred_e <- as.numeric(pred_l %*% t(fa4$rot.scores))
+    names(pred_e) <- rownames(fa4$rot.scores)
+    
+    
+    obs_tab <- blue_tab[blue_tab$env == i, c("gen", "blue_dev")]
+    
+    common_gen <- intersect(names(pred_e), obs_tab$gen)
+    
+    pred_use <- pred_e[common_gen]
+    obs_use  <- obs_tab$blue_dev[match(common_gen, obs_tab$gen)]
+    
+    valid <- is.finite(pred_use) & is.finite(obs_use)
+    
+    pred_use <- pred_use[valid]
+    obs_use  <- obs_use[valid]
+    
+    if (length(pred_use) >= 3) {
+      
+      acc_blue <- c(
+        acc_blue,
+        suppressWarnings(
+          cor(pred_use, obs_use, method = "spearman")
+        )
+      )
+      
+      rmsep_blue <- c(
+        rmsep_blue,
+        sqrt(mean((pred_use - obs_use)^2, na.rm = TRUE))
+      )
+    }
+  }
+  
+  
+  data.frame(
+    ncomp         = j,
+    lambda_cor    = mean(acc_lambda, na.rm = TRUE),
+    blue_spearman = mean(acc_blue, na.rm = TRUE),
+    blue_rmsep    = mean(rmsep_blue, na.rm = TRUE)
+  )
+}))
+
+cv.results
+
+source("https://raw.githubusercontent.com/Guilherme-Bravim/possibly_useful/refs/heads/main/04_cross_validation_Automated_coffee_project.R")
+
+descricao<-"med_bianualidade_jan15dias_"
+
+
+results<-cross.val(factors = c(3,4),phen.data = data2, env.data = matcovamb, description = descricao,
+                   n.comp.pls = c(3,2,4:7,9,17))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
