@@ -1,0 +1,2120 @@
+################################################################################
+#
+#  GIS-FA: Analise inicial
+#
+#   Descricao: As analises realizadas aqui foram feitas considerando os dados das 
+#     medias de duas safras. 
+#
+#   Os dados fenotipicos foram considerados as medias dentro de duas safras por local, 
+#     isso foi realizado para padronizar possiveis vieses da bianualidade 
+#
+################################################################################
+rm(list=ls())
+# setwd("/home/luis/Área de Trabalho/GIS_FA_CAFE-main/03_analises_08_2026/10_scenario_6")
+
+# Carregando pacotes ------------------
+library(readxl)
+library(dplyr)
+library(asreml)
+library(ggplot2)
+##------------------------------------------------------------------------------
+
+data <- rio::import("https://raw.githubusercontent.com/Luigicarlo01/GIS_FA_COFFEE/main/data_ciclo.xlsx")[, 1:9]
+data2<-data%>%
+  group_by(municipio,produtor,lat,lon,cultivar,ano)%>%
+  summarise(prod=mean(prod,na.rm=T),
+            .groups = "drop")%>%
+  ungroup() %>%
+  dplyr::mutate(env= paste0("env.", as.numeric(as.factor(paste(lat, lon, ano,
+                                                               sep = "_")))))%>%
+  mutate(env=as.factor(env),gen=as.factor(cultivar),ano=as.factor(ano))
+
+
+#===============================================================================
+### Preparando os dados para as medias das safras para quebra da bianualidade 
+#===============================================================================
+# Removendo locais com apenas uma medida 
+
+resumo<- data2 %>%
+  dplyr::mutate(env= paste0("env.", as.numeric(as.factor(paste(lat, lon,
+                                                               sep = "_")))))%>%
+  select(env, ano, lat, lon) %>%
+  distinct() %>%
+  count(env,lat, lon, name = "n_anos")
+
+
+eliminar<-resumo%>%filter(n_anos==1)
+years.2<-resumo%>%filter(n_anos==2)
+years.3<-resumo%>%filter(n_anos==3)
+years.4<-resumo%>%filter(n_anos==4)
+
+
+# Um ano de avaliacao 
+dt1<- data2 %>% semi_join(eliminar, by = c("lat", "lon"))
+
+# dois anos de avaliacoes
+dt2 <- data2 %>%
+  semi_join(years.2, by = c("lat", "lon")) %>%
+  group_by(municipio, produtor, lat, lon, gen) %>%
+  droplevels()%>%
+  summarise(ano = paste(sort(unique(ano)), collapse = "-"),
+            prod = mean(prod, na.rm = TRUE),
+            .groups = "drop"
+  )
+
+# tres de avaliacoes
+dt3<- data2 %>% semi_join(years.3, by = c("lat", "lon"))%>%
+  dplyr::mutate(env= paste0("env.", as.numeric(as.factor(paste(lat, lon,
+                                                               sep = "_")))))
+new.data <- list()
+for(i in 1:length(unique(dt3$env))){
+  env.new<-unique(dt3$env)[i]
+  
+  dt<-dt3%>%filter(env%in%env.new)
+  years<-unique(dt$ano)%>%droplevels()
+  
+  dt<-dt3%>%filter(env%in%env.new)%>%filter(ano%in%years[1:2])%>%
+    group_by(municipio, produtor, lat, lon, gen) %>%
+    droplevels()%>%
+    summarise(ano = paste(sort(unique(ano)), collapse = "-"),
+              prod = mean(prod, na.rm = TRUE),
+              .groups = "drop"
+    )
+  
+  dt.last.year<-dt3%>%filter(env%in%env.new)%>%filter(ano%in%years[3])%>%select(
+    municipio,produtor, lat, lon, gen, ano, prod)
+  
+  dt.agrup<-rbind(dt,dt.last.year)
+  new.data[[length(new.data)+1]]<-dt.agrup
+  
+}
+
+dt3<-do.call("rbind",new.data)
+
+# Quatro de avaliacoes
+dt4<- data2 %>% semi_join(years.4, by = c("lat", "lon"))%>%
+  dplyr::mutate(env= paste0("env.", as.numeric(as.factor(paste(lat, lon,
+                                                               sep = "_")))))
+
+new.data <- list()
+for(i in 1:length(unique(dt4$env))){
+  env.new<-unique(dt4$env)[i]
+  
+  dt<-dt4%>%filter(env%in%env.new)
+  years<-unique(dt$ano)%>%droplevels()
+  
+  dt<-dt4%>%filter(env%in%env.new)%>%filter(ano%in%years[1:2])%>%
+    group_by(municipio, produtor, lat, lon, gen) %>%
+    droplevels()%>%
+    summarise(ano = paste(sort(unique(ano)), collapse = "-"),
+              prod = mean(prod, na.rm = TRUE),
+              .groups = "drop")
+  
+  dt.last.year<-dt4%>%filter(env%in%env.new)%>%filter(ano%in%years[3:4])%>%
+    group_by(municipio, produtor, lat, lon, gen) %>%
+    droplevels()%>%
+    summarise(ano = paste(sort(unique(ano)), collapse = "-"),
+              prod = mean(prod, na.rm = TRUE),
+              .groups = "drop")
+  
+  
+  dt.agrup<-rbind(dt,dt.last.year)%>%    select(
+    municipio,produtor, lat, lon, gen, ano, prod)
+  
+  
+  new.data[[length(new.data)+1]]<-dt.agrup
+  
+}
+
+dt4<-do.call("rbind",new.data)
+
+## Reconstruindo o arquivo de dados
+new.data<-rbind(dt2,dt3)
+new.data<-rbind(new.data,dt4)
+
+new.data <-new.data%>%
+  dplyr::mutate(env= paste0("env.", as.numeric(as.factor(paste(lat, lon,ano,
+                                                               sep = "_")))))%>%
+  ungroup() %>%
+  mutate(env=as.factor(env),gen=as.factor(gen),ano=as.factor(ano))
+
+
+
+data2<-droplevels(new.data)
+
+#------------------------
+## Testando os modelos
+#------------------------
+source("https://raw.githubusercontent.com/Guilherme-Bravim/possibly_useful/refs/heads/main/fa_outs_mod.R")
+
+# # FA1 
+# mod.fa1 <- asreml(fixed = prod ~  env,
+#                   random = ~ gen:fa(env, 1),
+#                   #             residual = ~dsum(~id(units)|local),
+#                   data = data2,
+#                   maxit = 1000,
+#                   na.action = na.method(x="include", y = "include"))
+# mod.fa1 = update(mod.fa1)
+# 
+# # FA2
+# mod.fa2 <- asreml(fixed = prod ~ env,
+#                   random = ~ gen:fa(env, 2),
+#                   #           residual = ~dsum(~id(units)|local),
+#                   data = data2,
+#                   maxit = 1000,
+#                   na.action = na.method(x="include", y = "include"))
+# mod.fa2 = update(mod.fa2)
+
+# FA3
+mod.fa3 <- asreml(fixed = prod ~ env,
+                  random = ~ gen:fa(env, 3),
+                  #           residual = ~dsum(~id(units)|local),
+                  data = data2,
+                  maxit = 1000,
+                  na.action = na.method(x="include", y = "include"))
+mod.fa3 = update(mod.fa3)
+
+# # FA4
+# mod.fa4 <- asreml(fixed = prod ~ env,
+#                   random = ~ gen:fa(env, 4),
+#                   #           residual = ~dsum(~id(units)|local),
+#                   data = data2,
+#                   maxit = 1000,
+#                   na.action = na.method(x="include", y = "include"))
+# mod.fa4 = update(mod.fa4)
+# 
+# # FA5
+# mod.fa5 <- asreml(fixed = prod ~  env,
+#                   random = ~ gen:fa(env, 5),
+#                   #           residual = ~dsum(~id(units)|local),
+#                   data = data2,
+#                   maxit = 1000,
+#                   workspace="1gb",
+#                   na.action = na.method(x="include", y = "include"))
+# mod.fa5 = update(mod.fa5)
+# 
+# 
+# # FA6
+# mod.fa6 <- asreml(fixed = prod ~  env,
+#                   random = ~ gen:fa(env, 6),
+#                   #           residual = ~dsum(~id(units)|local),
+#                   data = data2,
+#                   maxit = 1000,
+#                   workspace="1gb",
+#                   na.action = na.method(x="include", y = "include"))
+# mod.fa6 = update(mod.fa6)
+
+#asreml.options(pworkspace="8gb",workspace="4gb")
+fa.models = list(mod.fa3)
+
+fa.res = lapply(fa.models, function(x) fa.outs(x, name.env = "env",
+                                               name.gen = "gen"))
+
+diagnos = do.call(rbind,lapply(fa.res, function(x) x$diagnostics))
+#rownames(diagnos) = c("mod.fa1", "mod.fa2","mod.fa3","mod.fa4", "mod.fa5", "mod.fa6"); diagnos[,'ASVR']
+diagnos
+
+# summary(mod.fa1)$aic
+# summary(mod.fa2)$aic
+# summary(mod.fa3)$aic
+# summary(mod.fa4)$aic
+# summary(mod.fa5)$aic
+# summary(mod.fa6)$aic
+
+fa.models = list(mod.fa3)
+fa.res = lapply(fa.models, function(x) fa.outs(x, name.env = "env",
+                                               name.gen = "gen"))
+all <- fa.res[[1]]$blups
+
+fa = fa.res[[1]]
+
+library(tidyr)
+library(tibble)
+
+dist_matrix <- dist(fa$Gcor, method = "euclidean")  
+hc <- hclust(dist_matrix, method = "ward.D2")
+ordered_indices <- hc$order
+fa_clustered <- fa$Gcor[ordered_indices, ordered_indices]
+rownames(fa_clustered) <- colnames(fa_clustered) <- rownames(fa$Gcor)[ordered_indices]
+
+fa_clustered[upper.tri(fa_clustered, diag = TRUE)] <- NA
+
+
+fa_melted <- fa_clustered %>%
+  as.data.frame() %>%
+  rownames_to_column("Var1") %>%
+  pivot_longer(-Var1, names_to = "Var2", values_to = "Correlation") %>%
+  drop_na()
+
+fa_melted$Var1 <- factor(fa_melted$Var1, levels = rev(rownames(fa_clustered)))
+fa_melted$Var2 <- factor(fa_melted$Var2, levels = colnames(fa_clustered))
+
+cor <- ggplot(fa_melted, aes(x = Var2, y = Var1, fill = Correlation)) +
+  geom_tile(color = NA, width = 1, height = 1) +  
+  scale_fill_viridis_c(option = "H", limits = c(-1, 1), na.value = "white") +
+  scale_x_discrete(expand = c(0, 0)) +  
+  scale_y_discrete(expand = c(0, 0)) +  
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.title = element_text(size = 11, face = "bold"),
+    panel.grid = element_blank(),    
+    panel.background = element_blank(),
+    plot.background = element_blank()
+  ) +
+  labs(x = NULL, y = NULL, fill = "Corr.") +
+  coord_fixed()
+
+#cor
+
+num.env<- nlevels(data2$env);num.env
+num.gen<- nlevels(data2$gen);num.gen
+num.year<- nlevels(data2$ano)
+name.env<- levels(data2$env)
+name.gen<- levels(data2$gen)
+
+#--------------------------------------------
+# Organizando os dados ambientais 
+#--------------------------------------------
+env.info <- readRDS(url("https://raw.githubusercontent.com/Luigicarlo01/GIS_FA_COFFEE/main/new_data_tested_env_diario.RDS")) %>%
+  dplyr::select(!c(FROST_DAYS, FRUE))%>%
+  dplyr::mutate(env=env.x)%>%
+  dplyr::select(!c(env.x,env.y))
+
+# Organizando os dados ambientais ---------
+# Calculando para as janelas de 15 dias, no caso dos ambientes calculado com media de dois anos, os dados ambientais sao 
+#   as medias dos 15 dias do primeiro ano e dos 15 dias do segundo ano
+library(stringr)
+library(lubridate)
+library(dplyr)
+library(tidyr)
+
+env.info <- env.info %>%
+  dplyr::mutate(
+    data = as.Date(YYYYMMDD),
+    ano_janela = ifelse(month(data) >= 8, year(data) + 1, year(data)),
+    inicio_ciclo = as.Date(paste0(ano_janela - 1, "-08-01")),
+    dia_ciclo = as.numeric(data - inicio_ciclo) + 1,
+    periodo = ceiling(dia_ciclo / 15)
+  )
+
+
+env.list <- list()
+
+for (i in 1:length(unique(data2$env))) {
+  
+  dt <- data2 %>%
+    dplyr::filter(env %in% levels(droplevels(data2$env))[i]) %>%
+    dplyr::select(lat, lon, ano, env) %>%
+    distinct()
+  
+  anos <- as.numeric(unlist(str_split(dt$ano, "-")))
+  
+  env.frac <- env.info %>%
+    dplyr::select(-data, -inicio_ciclo, -dia_ciclo, -DOY, -YYYYMMDD) %>%
+    semi_join(dt, by = c("lat", "lon")) %>%
+    dplyr::filter(ano_janela %in% anos) %>%
+    dplyr::select(-ano_janela) %>%
+    # agrupa por PERIODO, nao por ano -> se o env tiver 2 anos-safra,
+    # os dias do mesmo periodo nos dois anos entram na mesma media,
+    # e cada periodo vira uma variavel nova apos o pivot_wider
+    group_by(lat, lon, periodo) %>%
+    summarise(
+      across(where(is.numeric), \(x) mean(x, na.rm = TRUE)),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      names_from = periodo,
+      values_from = -c(lat, lon, periodo),
+      names_glue = "{.value}.m{periodo}"
+    )
+  
+  env.frac$env <- levels(droplevels(data2$env))[i]
+  ordem <- c("env", setdiff(colnames(env.frac), "env"))
+  env.frac <- env.frac[, ordem]
+  
+  env.list[[length(env.list) + 1]] <- env.frac
+}
+
+env.final <- dplyr::bind_rows(env.list)
+
+
+#===============================================================================
+# SHAP + SHAP INTERACTION ANTES DA CRIACAO DE CovAmb0
+#===============================================================================
+#
+# NOVO FLUXO:
+#
+# env.final
+#   ↓
+# matcovamb
+#   ↓
+# X = covariaveis ambientais completas
+#   ↓
+# CatBoost + SHAP
+#   ↓
+# SHAP Interaction
+#   ↓
+# features.final
+#   ↓
+# CovAmb0 = somente features selecionadas
+#   ↓
+# PLS / LOEO / cross.val
+#
+# IMPORTANTE:
+# A selecao NAO e feita em CovAmb0.
+# CovAmb0 so passa a existir APOS a selecao das features.
+#===============================================================================
+
+library(pls)
+library(catboost)
+library(reticulate)
+
+set.seed(123)
+
+#-------------------------------------------------------------------------------
+# 1. PREPARAR matcovamb, Lambda E X PARA A SELECAO
+#-------------------------------------------------------------------------------
+
+# env.final:
+# coluna 1 = env
+# coluna 2 = lat
+# coluna 3 = lon
+# demais colunas = covariaveis ambientais por janela
+
+matcovamb <- env.final[, -c(1:3), drop = FALSE]
+matcovamb <- as.data.frame(matcovamb)
+rownames(matcovamb) <- as.character(env.final$env)
+
+# Garantir nomes unicos sem alterar a estrutura das variaveis.
+names(matcovamb) <- make.names(
+  names(matcovamb),
+  unique = TRUE
+)
+
+# Resultado do FA3.
+fa4 <- fa.res[[1]]
+
+Lambda <- as.matrix(fa4$rot.loads)
+
+if (is.null(Lambda)) {
+  stop("fa4$rot.loads e NULL.")
+}
+
+if (is.null(rownames(Lambda))) {
+  stop("Lambda nao possui nomes de ambientes nas linhas.")
+}
+
+if (is.null(colnames(Lambda))) {
+  colnames(Lambda) <- paste0("FA", seq_len(ncol(Lambda)))
+}
+
+#-------------------------------------------------------------------------------
+# 1.1 ALINHAR AMBIENTES ANTES DA SELECAO
+#-------------------------------------------------------------------------------
+
+envs <- intersect(
+  rownames(Lambda),
+  rownames(matcovamb)
+)
+
+if (length(envs) < 10) {
+  stop(
+    paste0(
+      "Poucos ambientes em comum entre Lambda e matcovamb: ",
+      length(envs)
+    )
+  )
+}
+
+Lambda <- Lambda[
+  envs,
+  ,
+  drop = FALSE
+]
+
+matcovamb.selecao <- matcovamb[
+  envs,
+  ,
+  drop = FALSE
+]
+
+#-------------------------------------------------------------------------------
+# 1.2 MANTER SOMENTE COVARIAVEIS NUMERICAS
+#-------------------------------------------------------------------------------
+
+colunas.numericas <- vapply(
+  matcovamb.selecao,
+  is.numeric,
+  logical(1)
+)
+
+if (!all(colunas.numericas)) {
+  cat(
+    "\nColunas nao numericas removidas antes do SHAP:\n"
+  )
+  print(
+    names(matcovamb.selecao)[!colunas.numericas]
+  )
+}
+
+matcovamb.selecao <- matcovamb.selecao[
+  ,
+  colunas.numericas,
+  drop = FALSE
+]
+
+#-------------------------------------------------------------------------------
+# 1.3 REMOVER COVARIAVEIS SEM VARIACAO
+#-------------------------------------------------------------------------------
+
+ok <- vapply(
+  matcovamb.selecao,
+  function(x) {
+    xx <- x[is.finite(x)]
+    length(xx) >= 2 &&
+      is.finite(sd(xx)) &&
+      sd(xx) > 0
+  },
+  logical(1)
+)
+
+matcovamb.selecao <- matcovamb.selecao[
+  ,
+  ok,
+  drop = FALSE
+]
+
+if (ncol(matcovamb.selecao) < 2) {
+  stop(
+    "Menos de duas covariaveis ambientais validas antes da selecao SHAP."
+  )
+}
+
+#-------------------------------------------------------------------------------
+# 1.4 IMPUTAR VALORES NAO FINITOS
+#
+# X sera o banco que entra no CatBoost/SHAP.
+# Ainda NAO criamos CovAmb0.
+#-------------------------------------------------------------------------------
+
+medias.imputacao <- vapply(
+  matcovamb.selecao,
+  function(x) {
+    mean(
+      x[is.finite(x)],
+      na.rm = TRUE
+    )
+  },
+  numeric(1)
+)
+
+X <- matcovamb.selecao
+
+for (nm in names(X)) {
+  ruim <- !is.finite(X[[nm]])
+
+  if (any(ruim)) {
+    X[[nm]][ruim] <- medias.imputacao[[nm]]
+  }
+}
+
+cat(
+  "\n============================================================\n"
+)
+cat(
+  "BANCO QUE ENTRA NO SHAP\n"
+)
+cat(
+  "============================================================\n"
+)
+cat(
+  "Ambientes:",
+  nrow(X),
+  "\n"
+)
+cat(
+  "Covariaveis antes do SHAP:",
+  ncol(X),
+  "\n"
+)
+cat(
+  "Cargas fatoriais:",
+  ncol(Lambda),
+  "\n\n"
+)
+
+#-------------------------------------------------------------------------------
+# 2. CONFIGURACOES DO CATBOOST / SHAP
+#-------------------------------------------------------------------------------
+
+prop.shap <- 0.90
+min.features <- 5
+
+prop.validacao <- 0.20
+seed.validacao <- 123
+
+grid.top.pares.interaction <- c(
+  0,
+  5,
+  10,
+  20,
+  30,
+  50,
+  100
+)
+
+params.catboost <- list(
+  loss_function = "RMSE",
+  eval_metric = "RMSE",
+  iterations = 3000,
+  depth = 8,
+  learning_rate = 0.02,
+  l2_leaf_reg = 10,
+  random_strength = 1,
+  random_seed = 123,
+  od_type = "Iter",
+  od_wait = 100,
+  use_best_model = TRUE,
+  verbose = 50,
+  allow_writing_files = FALSE
+)
+
+#-------------------------------------------------------------------------------
+# 3. PASTAS DE SAIDA
+#-------------------------------------------------------------------------------
+
+pasta.shap <- file.path(
+  getwd(),
+  "SHAP_Interaction"
+)
+
+pasta.modelos <- file.path(
+  pasta.shap,
+  "modelos"
+)
+
+pasta.tabelas <- file.path(
+  pasta.shap,
+  "tabelas"
+)
+
+pasta.rds <- file.path(
+  pasta.shap,
+  "rds"
+)
+
+dir.create(
+  pasta.shap,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+dir.create(
+  pasta.modelos,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+dir.create(
+  pasta.tabelas,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+dir.create(
+  pasta.rds,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+#-------------------------------------------------------------------------------
+# 4. PYTHON / RETICULATE PARA SHAP INTERACTION
+#-------------------------------------------------------------------------------
+
+Sys.setenv(
+  RETICULATE_PYTHON = "managed"
+)
+
+py_require(
+  c(
+    "numpy",
+    "catboost",
+    "shap"
+  )
+)
+
+modulos.python <- c(
+  numpy = py_module_available("numpy"),
+  catboost = py_module_available("catboost"),
+  shap = py_module_available("shap")
+)
+
+print(modulos.python)
+
+if (!all(modulos.python)) {
+  stop(
+    "Nem todos os modulos Python necessarios estao disponiveis."
+  )
+}
+
+shap_py <- import(
+  "shap",
+  convert = FALSE
+)
+
+catboost_py <- import(
+  "catboost",
+  convert = FALSE
+)
+
+#-------------------------------------------------------------------------------
+# 5. FUNCOES AUXILIARES
+#-------------------------------------------------------------------------------
+
+rmse <- function(
+    observado,
+    predito
+) {
+  sqrt(
+    mean(
+      (observado - predito)^2,
+      na.rm = TRUE
+    )
+  )
+}
+
+seleciona.shap <- function(
+    ranking,
+    prop = 0.90,
+    min.features = 5
+) {
+
+  ranking <- ranking %>%
+    arrange(
+      desc(mean_abs_SHAP)
+    )
+
+  total <- sum(
+    ranking$mean_abs_SHAP,
+    na.rm = TRUE
+  )
+
+  if (!is.finite(total) || total <= 0) {
+    n.sel <- min(
+      min.features,
+      nrow(ranking)
+    )
+
+    return(
+      ranking$feature[
+        seq_len(n.sel)
+      ]
+    )
+  }
+
+  ranking <- ranking %>%
+    mutate(
+      prop_SHAP = mean_abs_SHAP / total,
+      prop_SHAP_acumulado = cumsum(prop_SHAP)
+    )
+
+  n.prop <- which(
+    ranking$prop_SHAP_acumulado >= prop
+  )[1]
+
+  n.sel <- max(
+    min.features,
+    n.prop
+  )
+
+  n.sel <- min(
+    n.sel,
+    nrow(ranking)
+  )
+
+  ranking$feature[
+    seq_len(n.sel)
+  ]
+}
+
+#-------------------------------------------------------------------------------
+# 6. SPLIT INTERNO
+#-------------------------------------------------------------------------------
+
+n.env.shap <- nrow(X)
+
+n.valid <- max(
+  5,
+  round(
+    prop.validacao * n.env.shap
+  )
+)
+
+n.valid <- min(
+  n.valid,
+  n.env.shap - 5
+)
+
+if (n.valid < 1) {
+  stop(
+    "Numero insuficiente de ambientes para criar validacao interna."
+  )
+}
+
+set.seed(
+  seed.validacao
+)
+
+id.valid <- sort(
+  sample(
+    seq_len(n.env.shap),
+    size = n.valid,
+    replace = FALSE
+  )
+)
+
+id.fit <- setdiff(
+  seq_len(n.env.shap),
+  id.valid
+)
+
+cat(
+  "Ambientes FIT:",
+  length(id.fit),
+  "\n"
+)
+
+cat(
+  "Ambientes VALID:",
+  length(id.valid),
+  "\n\n"
+)
+
+#-------------------------------------------------------------------------------
+# 7. OBJETOS DE RESULTADO
+#-------------------------------------------------------------------------------
+
+ranking.shap <- list()
+features.shap <- list()
+
+ranking.interaction <- list()
+pares.interaction <- list()
+features.interaction <- list()
+
+features.final.por.fator <- list()
+
+modelos.catboost <- list()
+modelos.finais <- list()
+
+matrizes.interaction <- list()
+
+avaliacao.selecao <- data.frame()
+
+#-------------------------------------------------------------------------------
+# 8. CATBOOST + SHAP + SHAP INTERACTION
+#
+# IMPORTANTE:
+# Tudo abaixo trabalha sobre X.
+# CovAmb0 ainda NAO existe.
+#-------------------------------------------------------------------------------
+
+for (j in seq_len(ncol(Lambda))) {
+
+  fator <- colnames(Lambda)[j]
+
+  cat(
+    "\n============================================================\n"
+  )
+  cat(
+    "FATOR:",
+    fator,
+    "\n"
+  )
+  cat(
+    "============================================================\n\n"
+  )
+
+  y <- as.numeric(
+    Lambda[, j]
+  )
+
+  if (any(!is.finite(y))) {
+    stop(
+      paste(
+        "Existem cargas fatoriais nao finitas em",
+        fator
+      )
+    )
+  }
+
+  X.fit <- X[
+    id.fit,
+    ,
+    drop = FALSE
+  ]
+
+  X.valid <- X[
+    id.valid,
+    ,
+    drop = FALSE
+  ]
+
+  y.fit <- y[id.fit]
+  y.valid <- y[id.valid]
+
+  #-------------------------------------------------------------------------
+  # 8.1 CATBOOST COM TODAS AS COVARIAVEIS DE X
+  #-------------------------------------------------------------------------
+
+  pool.fit <- catboost.load_pool(
+    data = X.fit,
+    label = y.fit
+  )
+
+  pool.valid <- catboost.load_pool(
+    data = X.valid,
+    label = y.valid
+  )
+
+  modelo.completo <- catboost.train(
+    learn_pool = pool.fit,
+    test_pool = pool.valid,
+    params = params.catboost
+  )
+
+  modelos.catboost[[fator]] <- modelo.completo
+
+  pred.valid.completo <- catboost.predict(
+    modelo.completo,
+    pool.valid
+  )
+
+  rmse.completo <- rmse(
+    y.valid,
+    pred.valid.completo
+  )
+
+  #-------------------------------------------------------------------------
+  # 8.2 SHAP PRINCIPAL
+  #-------------------------------------------------------------------------
+
+  shap.raw <- catboost.get_feature_importance(
+    model = modelo.completo,
+    pool = pool.fit,
+    type = "ShapValues"
+  )
+
+  shap.features <- shap.raw[
+    ,
+    seq_len(ncol(X.fit)),
+    drop = FALSE
+  ]
+
+  colnames(shap.features) <- colnames(X.fit)
+
+  mean.abs.shap <- colMeans(
+    abs(shap.features),
+    na.rm = TRUE
+  )
+
+  ranking <- data.frame(
+    feature = names(mean.abs.shap),
+    mean_abs_SHAP = as.numeric(mean.abs.shap),
+    stringsAsFactors = FALSE
+  ) %>%
+    arrange(
+      desc(mean_abs_SHAP)
+    )
+
+  total.shap <- sum(
+    ranking$mean_abs_SHAP,
+    na.rm = TRUE
+  )
+
+  if (is.finite(total.shap) && total.shap > 0) {
+    ranking <- ranking %>%
+      mutate(
+        prop_SHAP = mean_abs_SHAP / total.shap,
+        prop_SHAP_acumulado = cumsum(prop_SHAP)
+      )
+  } else {
+    ranking$prop_SHAP <- 0
+    ranking$prop_SHAP_acumulado <- 0
+  }
+
+  ranking.shap[[fator]] <- ranking
+
+  vars.shap <- seleciona.shap(
+    ranking = ranking,
+    prop = prop.shap,
+    min.features = min.features
+  )
+
+  features.shap[[fator]] <- vars.shap
+
+  cat(
+    "Features SHAP principal:",
+    length(vars.shap),
+    "\n"
+  )
+
+  print(vars.shap)
+
+  write.csv(
+    ranking,
+    file.path(
+      pasta.tabelas,
+      paste0(
+        "Ranking_SHAP_",
+        make.names(fator),
+        ".csv"
+      )
+    ),
+    row.names = FALSE
+  )
+
+  #-------------------------------------------------------------------------
+  # 8.3 SALVAR MODELO COMPLETO E ABRIR NO PYTHON
+  #-------------------------------------------------------------------------
+
+  arquivo.modelo <- file.path(
+    pasta.modelos,
+    paste0(
+      "CatBoost_completo_",
+      make.names(fator),
+      ".cbm"
+    )
+  )
+
+  catboost.save_model(
+    modelo.completo,
+    arquivo.modelo
+  )
+
+  arquivo.modelo <- normalizePath(
+    arquivo.modelo,
+    mustWork = TRUE
+  )
+
+  modelo.py <- catboost_py$CatBoostRegressor()
+
+  modelo.py$load_model(
+    arquivo.modelo
+  )
+
+  X.fit.matrix <- as.matrix(
+    X.fit
+  )
+
+  storage.mode(
+    X.fit.matrix
+  ) <- "double"
+
+  X.fit.py <- r_to_py(
+    X.fit.matrix,
+    convert = FALSE
+  )
+
+  explainer.py <- shap_py$TreeExplainer(
+    modelo.py
+  )
+
+  cat(
+    "Calculando SHAP Interaction para",
+    fator,
+    "...\n"
+  )
+
+  tempo.interaction <- system.time({
+    interaction.py <- explainer.py$shap_interaction_values(
+      X.fit.py
+    )
+  })
+
+  print(
+    tempo.interaction
+  )
+
+  interaction.array <- py_to_r(
+    interaction.py
+  )
+
+  dims <- dim(
+    interaction.array
+  )
+
+  if (
+    length(dims) != 3 ||
+      dims[1] != nrow(X.fit) ||
+      dims[2] != ncol(X.fit) ||
+      dims[3] != ncol(X.fit)
+  ) {
+    stop(
+      paste(
+        "Dimensoes inesperadas do SHAP Interaction para",
+        fator,
+        ":",
+        paste(
+          dims,
+          collapse = " x "
+        )
+      )
+    )
+  }
+
+  saveRDS(
+    interaction.array,
+    file.path(
+      pasta.rds,
+      paste0(
+        "SHAP_Interaction_array_",
+        make.names(fator),
+        ".RDS"
+      )
+    )
+  )
+
+  #-------------------------------------------------------------------------
+  # 8.4 MATRIZ MEDIA ABSOLUTA DAS INTERACOES
+  #-------------------------------------------------------------------------
+
+  mean.interaction <- apply(
+    abs(interaction.array),
+    MARGIN = c(2, 3),
+    FUN = mean,
+    na.rm = TRUE
+  )
+
+  rownames(mean.interaction) <- colnames(X.fit)
+  colnames(mean.interaction) <- colnames(X.fit)
+
+  matrizes.interaction[[fator]] <- mean.interaction
+
+  saveRDS(
+    mean.interaction,
+    file.path(
+      pasta.rds,
+      paste0(
+        "Matriz_SHAP_Interaction_",
+        make.names(fator),
+        ".RDS"
+      )
+    )
+  )
+
+  write.csv(
+    mean.interaction,
+    file.path(
+      pasta.tabelas,
+      paste0(
+        "Matriz_SHAP_Interaction_",
+        make.names(fator),
+        ".csv"
+      )
+    ),
+    row.names = TRUE
+  )
+
+  #-------------------------------------------------------------------------
+  # 8.5 RANKING DOS PARES
+  #-------------------------------------------------------------------------
+
+  matriz.pares <- mean.interaction
+
+  diag(matriz.pares) <- NA_real_
+
+  posicoes <- which(
+    upper.tri(
+      matriz.pares,
+      diag = FALSE
+    ),
+    arr.ind = TRUE
+  )
+
+  tabela.pares <- data.frame(
+    feature_1 = rownames(matriz.pares)[posicoes[, 1]],
+    feature_2 = colnames(matriz.pares)[posicoes[, 2]],
+    mean_abs_SHAP_interaction = matriz.pares[posicoes],
+    stringsAsFactors = FALSE
+  ) %>%
+    filter(
+      is.finite(
+        mean_abs_SHAP_interaction
+      )
+    ) %>%
+    arrange(
+      desc(
+        mean_abs_SHAP_interaction
+      )
+    )
+
+  total.interaction <- sum(
+    tabela.pares$mean_abs_SHAP_interaction,
+    na.rm = TRUE
+  )
+
+  if (
+    is.finite(total.interaction) &&
+      total.interaction > 0
+  ) {
+    tabela.pares <- tabela.pares %>%
+      mutate(
+        prop_interaction =
+          mean_abs_SHAP_interaction / total.interaction,
+        prop_interaction_acumulado =
+          cumsum(prop_interaction)
+      )
+  } else {
+    tabela.pares$prop_interaction <- 0
+    tabela.pares$prop_interaction_acumulado <- 0
+  }
+
+  ranking.interaction[[fator]] <- tabela.pares
+
+  write.csv(
+    tabela.pares,
+    file.path(
+      pasta.tabelas,
+      paste0(
+        "Ranking_SHAP_Interaction_",
+        make.names(fator),
+        ".csv"
+      )
+    ),
+    row.names = FALSE
+  )
+
+  cat(
+    "\nTop 20 pares SHAP Interaction:\n"
+  )
+
+  print(
+    head(
+      tabela.pares,
+      20
+    )
+  )
+
+  #-------------------------------------------------------------------------
+  # 8.6 TESTAR QUANTOS PARES DE INTERACAO ADICIONAR
+  #-------------------------------------------------------------------------
+
+  grid.resultado <- data.frame()
+  modelos.grid <- list()
+  features.grid <- list()
+
+  grid.usado <- sort(
+    unique(
+      pmin(
+        grid.top.pares.interaction,
+        nrow(tabela.pares)
+      )
+    )
+  )
+
+  for (n.pares in grid.usado) {
+
+    if (n.pares == 0) {
+      pares.candidato <- tabela.pares[
+        0,
+        ,
+        drop = FALSE
+      ]
+
+      vars.interaction.candidato <- character(0)
+
+    } else {
+      pares.candidato <- head(
+        tabela.pares,
+        n.pares
+      )
+
+      vars.interaction.candidato <- unique(
+        c(
+          pares.candidato$feature_1,
+          pares.candidato$feature_2
+        )
+      )
+    }
+
+    vars.candidato <- unique(
+      c(
+        vars.shap,
+        vars.interaction.candidato
+      )
+    )
+
+    X.fit.candidato <- X.fit[
+      ,
+      vars.candidato,
+      drop = FALSE
+    ]
+
+    X.valid.candidato <- X.valid[
+      ,
+      vars.candidato,
+      drop = FALSE
+    ]
+
+    pool.fit.candidato <- catboost.load_pool(
+      data = X.fit.candidato,
+      label = y.fit
+    )
+
+    pool.valid.candidato <- catboost.load_pool(
+      data = X.valid.candidato,
+      label = y.valid
+    )
+
+    modelo.candidato <- catboost.train(
+      learn_pool = pool.fit.candidato,
+      test_pool = pool.valid.candidato,
+      params = params.catboost
+    )
+
+    pred.valid.candidato <- catboost.predict(
+      modelo.candidato,
+      pool.valid.candidato
+    )
+
+    rmse.candidato <- rmse(
+      y.valid,
+      pred.valid.candidato
+    )
+
+    chave <- as.character(
+      n.pares
+    )
+
+    modelos.grid[[chave]] <- modelo.candidato
+    features.grid[[chave]] <- vars.candidato
+
+    grid.resultado <- bind_rows(
+      grid.resultado,
+      data.frame(
+        n_pares = n.pares,
+        n_features_SHAP = length(vars.shap),
+        n_features_interaction = length(vars.interaction.candidato),
+        n_features_finais = length(vars.candidato),
+        RMSE_valid = rmse.candidato,
+        stringsAsFactors = FALSE
+      )
+    )
+  }
+
+  grid.resultado <- grid.resultado %>%
+    arrange(
+      RMSE_valid,
+      n_features_finais,
+      n_pares
+    )
+
+  melhor.n.pares <- grid.resultado$n_pares[1]
+  chave.melhor <- as.character(melhor.n.pares)
+
+  vars.final.fator <- features.grid[[chave.melhor]]
+  modelo.final.fator <- modelos.grid[[chave.melhor]]
+
+  if (melhor.n.pares == 0) {
+    pares.final <- tabela.pares[
+      0,
+      ,
+      drop = FALSE
+    ]
+  } else {
+    pares.final <- head(
+      tabela.pares,
+      melhor.n.pares
+    )
+  }
+
+  vars.interaction.adicionadas <- setdiff(
+    vars.final.fator,
+    vars.shap
+  )
+
+  pares.interaction[[fator]] <- pares.final
+  features.interaction[[fator]] <- vars.interaction.adicionadas
+  features.final.por.fator[[fator]] <- vars.final.fator
+  modelos.finais[[fator]] <- modelo.final.fator
+
+  #-------------------------------------------------------------------------
+  # 8.7 SALVAR RESULTADOS DO FATOR
+  #-------------------------------------------------------------------------
+
+  write.csv(
+    grid.resultado,
+    file.path(
+      pasta.tabelas,
+      paste0(
+        "Grid_SHAP_Interaction_",
+        make.names(fator),
+        ".csv"
+      )
+    ),
+    row.names = FALSE
+  )
+
+  write.csv(
+    pares.final,
+    file.path(
+      pasta.tabelas,
+      paste0(
+        "Pares_Interaction_selecionados_",
+        make.names(fator),
+        ".csv"
+      )
+    ),
+    row.names = FALSE
+  )
+
+  saveRDS(
+    vars.shap,
+    file.path(
+      pasta.rds,
+      paste0(
+        "Features_SHAP_principal_",
+        make.names(fator),
+        ".RDS"
+      )
+    )
+  )
+
+  saveRDS(
+    vars.interaction.adicionadas,
+    file.path(
+      pasta.rds,
+      paste0(
+        "Features_Interaction_adicionadas_",
+        make.names(fator),
+        ".RDS"
+      )
+    )
+  )
+
+  saveRDS(
+    vars.final.fator,
+    file.path(
+      pasta.rds,
+      paste0(
+        "Features_finais_",
+        make.names(fator),
+        ".RDS"
+      )
+    )
+  )
+
+  arquivo.modelo.final <- file.path(
+    pasta.modelos,
+    paste0(
+      "CatBoost_SHAP_Interaction_final_",
+      make.names(fator),
+      ".cbm"
+    )
+  )
+
+  catboost.save_model(
+    modelo.final.fator,
+    arquivo.modelo.final
+  )
+
+  avaliacao.selecao <- bind_rows(
+    avaliacao.selecao,
+    data.frame(
+      fator = fator,
+      n_features_iniciais = ncol(X),
+      n_features_SHAP = length(vars.shap),
+      RMSE_modelo_completo = rmse.completo,
+      top_pares_interaction = melhor.n.pares,
+      n_features_interaction_adicionadas =
+        length(vars.interaction.adicionadas),
+      n_features_finais = length(vars.final.fator),
+      RMSE_valid_final = grid.resultado$RMSE_valid[1],
+      stringsAsFactors = FALSE
+    )
+  )
+
+  cat(
+    "\nMelhor numero de pares:",
+    melhor.n.pares,
+    "\n"
+  )
+
+  cat(
+    "Features SHAP:",
+    length(vars.shap),
+    "\n"
+  )
+
+  cat(
+    "Features recuperadas pela Interaction:",
+    length(vars.interaction.adicionadas),
+    "\n"
+  )
+
+  cat(
+    "Numero final de features para",
+    fator,
+    ":",
+    length(vars.final.fator),
+    "\n"
+  )
+
+  print(
+    vars.final.fator
+  )
+
+  rm(
+    interaction.py,
+    X.fit.py,
+    explainer.py,
+    modelo.py
+  )
+
+  gc()
+}
+
+#-------------------------------------------------------------------------------
+# 9. UNIAO DAS FEATURES SELECIONADAS ENTRE OS FATORES
+#-------------------------------------------------------------------------------
+
+features.final <- unique(
+  unlist(
+    features.final.por.fator,
+    use.names = FALSE
+  )
+)
+
+if (length(features.final) == 0) {
+  stop(
+    "Nenhuma feature foi selecionada."
+  )
+}
+
+cat(
+  "\n============================================================\n"
+)
+cat(
+  "SELECAO FINAL CONCLUIDA\n"
+)
+cat(
+  "============================================================\n"
+)
+cat(
+  "Covariaveis antes do SHAP:",
+  ncol(X),
+  "\n"
+)
+cat(
+  "Covariaveis selecionadas:",
+  length(features.final),
+  "\n\n"
+)
+
+print(
+  features.final
+)
+
+#===============================================================================
+# 10. SOMENTE AGORA CRIAR CovAmb0
+#===============================================================================
+#
+# Este e o ponto principal da mudanca.
+#
+# ANTES:
+#   matcovamb -> CovAmb0 -> SHAP
+#
+# AGORA:
+#   matcovamb -> X -> SHAP -> features.final -> CovAmb0
+#
+#===============================================================================
+
+CovAmb0 <- as.matrix(
+  X[
+    ,
+    features.final,
+    drop = FALSE
+  ]
+)
+
+storage.mode(
+  CovAmb0
+) <- "double"
+
+matcovamb.shap <- as.data.frame(
+  CovAmb0
+)
+
+rownames(
+  matcovamb.shap
+) <- rownames(X)
+
+cat(
+  "\n============================================================\n"
+)
+cat(
+  "CovAmb0 CRIADO APOS A SELECAO SHAP\n"
+)
+cat(
+  "============================================================\n"
+)
+cat(
+  "Ambientes:",
+  nrow(CovAmb0),
+  "\n"
+)
+cat(
+  "Features em CovAmb0:",
+  ncol(CovAmb0),
+  "\n\n"
+)
+
+print(
+  colnames(CovAmb0)
+)
+
+#-------------------------------------------------------------------------------
+# 11. SALVAR RESULTADOS DA SELECAO
+#-------------------------------------------------------------------------------
+
+saveRDS(
+  ranking.shap,
+  file.path(
+    pasta.rds,
+    "Ranking_SHAP_por_FA.RDS"
+  )
+)
+
+saveRDS(
+  features.shap,
+  file.path(
+    pasta.rds,
+    "Features_SHAP_principal_por_FA.RDS"
+  )
+)
+
+saveRDS(
+  ranking.interaction,
+  file.path(
+    pasta.rds,
+    "Ranking_SHAP_Interaction_por_FA.RDS"
+  )
+)
+
+saveRDS(
+  pares.interaction,
+  file.path(
+    pasta.rds,
+    "Pares_SHAP_Interaction_selecionados_por_FA.RDS"
+  )
+)
+
+saveRDS(
+  features.interaction,
+  file.path(
+    pasta.rds,
+    "Features_Interaction_adicionadas_por_FA.RDS"
+  )
+)
+
+saveRDS(
+  features.final.por.fator,
+  file.path(
+    pasta.rds,
+    "Features_finais_por_FA.RDS"
+  )
+)
+
+saveRDS(
+  features.final,
+  file.path(
+    pasta.rds,
+    "Features_finais_uniao_FA.RDS"
+  )
+)
+
+saveRDS(
+  CovAmb0,
+  file.path(
+    pasta.rds,
+    "CovAmb0_APOS_SHAP_Interaction.RDS"
+  )
+)
+
+saveRDS(
+  matcovamb.shap,
+  file.path(
+    pasta.rds,
+    "matcovamb_SHAP_Interaction.RDS"
+  )
+)
+
+saveRDS(
+  avaliacao.selecao,
+  file.path(
+    pasta.rds,
+    "Avaliacao_selecao_SHAP_Interaction.RDS"
+  )
+)
+
+write.csv(
+  avaliacao.selecao,
+  file.path(
+    pasta.tabelas,
+    "Avaliacao_selecao_SHAP_Interaction.csv"
+  ),
+  row.names = FALSE
+)
+
+write.csv(
+  data.frame(
+    feature = features.final,
+    stringsAsFactors = FALSE
+  ),
+  file.path(
+    pasta.tabelas,
+    "Features_finais_uniao_FA.csv"
+  ),
+  row.names = FALSE
+)
+
+cat(
+  "\nResumo da selecao:\n"
+)
+
+print(
+  avaliacao.selecao
+)
+
+#-------------------------------------------------------------------------------
+# 12. PLS / LOEO MANUAL COM CovAmb0 JA REDUZIDO
+#-------------------------------------------------------------------------------
+
+CovAmb <- scale(
+  CovAmb0
+)
+
+get_blue_env <- function(
+    env_i,
+    data
+) {
+
+  df_i <- data[
+    as.character(data$env) == env_i,
+    ,
+    drop = FALSE
+  ]
+
+  df_i <- droplevels(
+    df_i
+  )
+
+  out <- df_i %>%
+    dplyr::group_by(
+      gen
+    ) %>%
+    dplyr::summarise(
+      blue = mean(
+        prod,
+        na.rm = TRUE
+      ),
+      .groups = "drop"
+    ) %>%
+    dplyr::mutate(
+      env = env_i
+    )
+
+  out$blue_dev <- out$blue -
+    mean(
+      out$blue,
+      na.rm = TRUE
+    )
+
+  out
+}
+
+blue_tab <- bind_rows(
+  lapply(
+    rownames(Lambda),
+    get_blue_env,
+    data = data2
+  )
+)
+
+n_env <- nrow(
+  CovAmb
+)
+
+if (n_env < 3) {
+  stop(
+    "Numero insuficiente de ambientes para validacao."
+  )
+}
+
+nmax <- min(
+  30,
+  n_env - 2,
+  ncol(CovAmb)
+)
+
+if (nmax < 1) {
+  stop(
+    "Nenhum numero de componentes PLS pode ser testado."
+  )
+}
+
+cv.results <- do.call(
+  rbind,
+  lapply(
+    seq_len(nmax),
+    function(j) {
+
+      acc_lambda <- numeric(0)
+      acc_blue <- numeric(0)
+      rmsep_blue <- numeric(0)
+
+      for (i in rownames(CovAmb)) {
+
+        env_train <- setdiff(
+          rownames(CovAmb),
+          i
+        )
+
+        df_train <- data.frame(
+          lambda = I(
+            Lambda[
+              env_train,
+              ,
+              drop = FALSE
+            ]
+          ),
+          CovAmb = I(
+            CovAmb[
+              env_train,
+              ,
+              drop = FALSE
+            ]
+          )
+        )
+
+        mod_pls <- pls::plsr(
+          lambda ~ CovAmb,
+          data = df_train,
+          ncomp = j,
+          validation = "none"
+        )
+
+        cf <- coef(
+          mod_pls,
+          ncomp = j,
+          intercept = TRUE
+        )[, , 1]
+
+        B <- as.matrix(
+          cf[
+            -1,
+            ,
+            drop = FALSE
+          ]
+        )
+
+        b0 <- matrix(
+          as.numeric(
+            cf[1, ]
+          ),
+          nrow = 1
+        )
+
+        pred_l <- CovAmb[
+          i,
+          ,
+          drop = FALSE
+        ] %*% B + b0
+
+        acc.lambda.i <- suppressWarnings(
+          cor(
+            as.numeric(pred_l),
+            as.numeric(Lambda[i, ])
+          )
+        )
+
+        if (is.finite(acc.lambda.i)) {
+          acc_lambda <- c(
+            acc_lambda,
+            acc.lambda.i
+          )
+        }
+
+        pred_e <- as.numeric(
+          pred_l %*%
+            t(fa4$rot.scores)
+        )
+
+        names(pred_e) <- rownames(
+          fa4$rot.scores
+        )
+
+        obs_tab <- blue_tab[
+          blue_tab$env == i,
+          c(
+            "gen",
+            "blue_dev"
+          )
+        ]
+
+        common_gen <- intersect(
+          names(pred_e),
+          as.character(obs_tab$gen)
+        )
+
+        pred_use <- pred_e[
+          common_gen
+        ]
+
+        obs_use <- obs_tab$blue_dev[
+          match(
+            common_gen,
+            as.character(obs_tab$gen)
+          )
+        ]
+
+        valid <- is.finite(pred_use) &
+          is.finite(obs_use)
+
+        pred_use <- pred_use[
+          valid
+        ]
+
+        obs_use <- obs_use[
+          valid
+        ]
+
+        if (length(pred_use) >= 3) {
+
+          spearman.i <- suppressWarnings(
+            cor(
+              pred_use,
+              obs_use,
+              method = "spearman"
+            )
+          )
+
+          if (is.finite(spearman.i)) {
+            acc_blue <- c(
+              acc_blue,
+              spearman.i
+            )
+          }
+
+          rmsep.i <- sqrt(
+            mean(
+              (pred_use - obs_use)^2,
+              na.rm = TRUE
+            )
+          )
+
+          if (is.finite(rmsep.i)) {
+            rmsep_blue <- c(
+              rmsep_blue,
+              rmsep.i
+            )
+          }
+        }
+      }
+
+      data.frame(
+        ncomp = j,
+        lambda_cor = mean(
+          acc_lambda,
+          na.rm = TRUE
+        ),
+        blue_spearman = mean(
+          acc_blue,
+          na.rm = TRUE
+        ),
+        blue_rmsep = mean(
+          rmsep_blue,
+          na.rm = TRUE
+        )
+      )
+    }
+  )
+)
+
+cat(
+  "\nResultados dos componentes PLS:\n"
+)
+
+print(
+  cv.results
+)
+
+write.csv(
+  cv.results,
+  file.path(
+    pasta.tabelas,
+    "Avaliacao_componentes_PLS_SHAP_Interaction.csv"
+  ),
+  row.names = FALSE
+)
+
+#-------------------------------------------------------------------------------
+# 13. CROSS.VAL ORIGINAL COM CovAmb0 JA FILTRADO
+#-------------------------------------------------------------------------------
+
+source(
+  paste0(
+    "https://raw.githubusercontent.com/",
+    "Guilherme-Bravim/possibly_useful/",
+    "refs/heads/main/",
+    "04_cross_validation_Automated_coffee_project.R"
+  )
+)
+
+descricao <- "med_bianualidade_jan15dias_SHAP_antes_CovAmb_"
+
+n.comp.candidatos <- c(
+  3,
+  2,
+  4:7,
+  9,
+  17
+)
+
+max.comp <- min(
+  ncol(matcovamb.shap),
+  nrow(matcovamb.shap) - 2
+)
+
+n.comp.use <- sort(
+  unique(
+    n.comp.candidatos[
+      n.comp.candidatos <= max.comp
+    ]
+  )
+)
+
+if (length(n.comp.use) == 0) {
+  stop(
+    "Nenhum valor de n.comp.pls e compativel com o banco selecionado."
+  )
+}
+
+cat(
+  "\nComponentes PLS enviados para cross.val():\n"
+)
+
+print(
+  n.comp.use
+)
+
+results <- cross.val(
+  factors = c(3),
+  phen.data = data2,
+  env.data = matcovamb.shap,
+  description = descricao,
+  n.comp.pls = n.comp.use
+)
+
+#-------------------------------------------------------------------------------
+# 14. SALVAR OBJETOS FINAIS
+#-------------------------------------------------------------------------------
+
+saveRDS(
+  results,
+  file.path(
+    pasta.rds,
+    "Resultados_crossval_GISFA_SHAP_antes_CovAmb.RDS"
+  )
+)
+
+saveRDS(
+  cv.results,
+  file.path(
+    pasta.rds,
+    "Resultados_LOEO_componentes_PLS.RDS"
+  )
+)
+
+saveRDS(
+  list(
+    data2 = data2,
+    fa = fa,
+    Lambda = Lambda,
+    X_antes_selecao = X,
+    features_shap = features.shap,
+    ranking_shap = ranking.shap,
+    ranking_interaction = ranking.interaction,
+    pares_interaction = pares.interaction,
+    features_interaction = features.interaction,
+    features_final_por_fator = features.final.por.fator,
+    features_final = features.final,
+    CovAmb0_apos_selecao = CovAmb0,
+    matcovamb_shap = matcovamb.shap,
+    avaliacao_selecao = avaliacao.selecao,
+    cv_results = cv.results,
+    results = results
+  ),
+  file.path(
+    pasta.rds,
+    "Objetos_finais_GISFA_SHAP_antes_CovAmb.RDS"
+  )
+)
+
+#-------------------------------------------------------------------------------
+# 15. RESUMO
+#-------------------------------------------------------------------------------
+
+cat(
+  "\n============================================================\n"
+)
+cat(
+  "PIPELINE FINALIZADO\n"
+)
+cat(
+  "============================================================\n"
+)
+
+cat(
+  "\nCovariaveis que entraram no SHAP:",
+  ncol(X),
+  "\n"
+)
+
+cat(
+  "Covariaveis que entraram em CovAmb0:",
+  ncol(CovAmb0),
+  "\n"
+)
+
+cat(
+  "\nFeatures finais:\n"
+)
+
+print(
+  features.final
+)
+
+cat(
+  "\nAvaliacao da selecao por fator:\n"
+)
+
+print(
+  avaliacao.selecao
+)
+
+cat(
+  "\nObjeto usado no GIS-FA:",
+  nrow(matcovamb.shap),
+  "ambientes x",
+  ncol(matcovamb.shap),
+  "features\n"
+)
+
+cat(
+  "\nArquivos salvos em:\n",
+  pasta.shap,
+  "\n"
+)
