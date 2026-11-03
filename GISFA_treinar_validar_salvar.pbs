@@ -1,0 +1,38 @@
+#!/bin/bash
+#PBS -N GISFA_MARS_SAVE
+#PBS -l nodes=1:ppn=10,mem=20gb,walltime=2160:00:00
+#PBS -q roteamento
+#PBS -m ae
+#PBS -j oe
+#PBS -o GISFA_treino.log
+
+set -euo pipefail
+cd "${PBS_O_WORKDIR}" || exit 1
+module purge
+module load r/4.5.1
+
+JOB_TAG="${PBS_JOBID%%.*}"
+RESULT_DIR="${PBS_O_WORKDIR}/resultados_GISFA_15dias_MARS_MODELOS_${JOB_TAG}"
+export RESULT_DIR
+export N_CORES=6
+export OPENBLAS_NUM_THREADS=1
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export BLIS_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+export RCPP_PARALLEL_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+if [ -d "${HOME}/pacotes" ]; then
+  export R_LIBS_USER="${HOME}/pacotes${R_LIBS_USER:+:${R_LIBS_USER}}"
+fi
+
+mkdir -p "${RESULT_DIR}/logs"
+echo "GISFA MARS.original + PLS + LOEO + exportacao de modelos finais"
+echo "Inicio: $(date)"
+echo "Resultados: ${RESULT_DIR}"
+# Mantenha os tres arquivos *.R e data_clean.txt no diretorio do qsub.
+Rscript --vanilla "${PBS_O_WORKDIR}/GISFA_treinar_validar_salvar.R" \
+  2>&1 | tee "${RESULT_DIR}/logs/execucao_R.log"
+status=$?
+echo "Fim: $(date) | Status: ${status} | Resultados: ${RESULT_DIR}"
+exit "${status}"
